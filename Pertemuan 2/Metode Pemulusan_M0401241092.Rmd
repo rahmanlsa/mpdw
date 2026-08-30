@@ -1,0 +1,279 @@
+---
+title: "Metode Pemulusan_Rahma Annisa_M0401241092"
+author: "Rahma Annisa"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# Data
+Data yang digunakan: Data Pergerakan Harga Bitcoin(BTC) periode 401 - periode 600 total 200 observasi data deret waktu. Rentang tanggal 6 Januari 2025 - 24 Juli 2025. Satuan Mata Uang: Rupiah(IDR).
+
+# Struktur Data
+Tanggal: menunjukkan tanggal pencatatan data(Format: DD/MM/YYYY)
+Periode: Indeks waktu berurutan dari 400-599
+Harga: nilai harga penutupan bitcoin hari ini
+
+# Library
+Tahap ini memanggil packages R yang dibutuhkan dalam analisis pemulusan deret waktu. Packages "forecast" dan "TTR" digunakan untuk permodelan peramalan Deret Waktu dan pembuatan fungsi pemulusan. Packages "graphics" digunakan untuk visualisasi grafik. Packages "rio"untuk mengimpor file data dari excel 
+```{r}
+library(forecast)
+library(graphics)
+library(TTR)
+library(rio)
+```
+
+#Iimpor data
+proses impor data dari file lokal ke R data pergerakan harian harga Bitcoin periode 400-600 menggunakan fungsi import () dari package rio
+```{r}
+data1 <- import("E:/Data Bitcoin 401-600_M0401241092.csv")
+head(data1)
+str(data1)
+```
+
+# Pembersihan data
+Pada tahap ini nama kolom yang awalnya berupa variabel numerik (V1, v2, ddan V3) diubah menjadi (Tanggal, Periode, dan Harga)
+
+```{r}
+colnames(data1) <- c("Tanggal", "Periode", "Harga")
+
+clean_price <- function(val) {
+  val_str <- trimws(as.character(val))
+  parts <- unlist(strsplit(val_str, "\\."))
+  
+  if (length(parts) == 4) {
+    num <- as.numeric(paste(parts, collapse = ""))
+    if (num > 2e9) num <- num / 10
+    return(num)
+  } else if (length(parts) == 3) {
+    num <- as.numeric(paste(parts, collapse = ""))
+    if (num < 5e8) num <- num * 10
+    return(num)
+  } else if (grepl("^[0-9]+\\.[0-9]+$", val_str) || grepl("^[0-9]+$", val_str)) {
+    num <- as.numeric(val_str)
+    if (num < 200000) num <- num * 10000
+    return(num)
+  } else {
+    return(as.numeric(gsub("\\.", "", val_str)))
+  }
+}
+
+data1$Harga_Clean <- sapply(data1$Harga, clean_price)
+data_ts <- ts(data1$Harga_Clean)
+
+head(data1)
+summary(data_ts)
+```
+
+# Eksplorasi Data
+Eksplorasi dilakukan untuk memvisualisasi data deret waktu ke dalam bentuk line chart 
+
+```{r}
+plot(data_ts, type = "l", col = "blue", lwd = 2,
+     main = "Plot Deret Waktu Harga Bitcoin (Periode 400 - 599)",
+     xlab = "Periode ke-", ylab = "Harga Bitcoin (IDR)")
+grid()
+```
+
+# Pembagian data (Train dan Test)
+```{r}
+n <- length(data_ts)
+n_train <- round(0.8 * n)
+
+train_data <- data_ts[1:n_train]
+test_data <- data_ts[(n_train + 1):n]
+
+cat("Jumlah data latih:", length(train_data), "\n")
+cat("Jumlah data uji:", length(test_data), "\n")
+```
+# Tahap pelatihan dan pengujian Model Single Moving Average (SMA)
+Metode pemulusan pertama yang digunakan adalah SMA dengan orde k = 3. Fungsi SMA berasal dari package TTR digunakan untuk menghitung nilai pemulusan, kemudian hasilnya digeser saru periode ke depan untuk mendapatkan nilai peramalan.
+
+```{r}
+library(TTR)
+k <- 3
+#Menghitung nilai SMA pada data latih
+sma_train <- SMA(train_data, n = k)
+
+#Peramalan untuk data uji
+ramalan_sma <- rep(tail(sma_train[!is.na(sma_train)], 1), length(test_data))
+
+bandingan_sma <- data.frame(
+  Data_Uji = test_data,
+  Hasil_Ramalan = ramalan_sma
+)
+print(bandingan_sma)
+
+#Selisih error antaradata uji aktual dengan hasil peramalan
+error_sma <- test_data - ramalan_sma
+
+#Menghitung nilai akurasi MAD, MSE, dan MAPE
+mad_sma <- mean(abs(error_sma), na.rm = TRUE)
+mse_sma <- mean(error_sma^2, na.rm = TRUE)
+mape_sma <- mean(abs(error_sma / test_data), na.rm = TRUE) * 100
+
+cat("MAD SMA:", mad_sma, "\n")
+cat("MSE SMA:", mse_sma, "\n")
+cat("MAPE SMA:", mape_sma, "% \n")
+```
+Nilai MAPE SMA sebesar 5,13% menunjukkan bahwa model SMA memiliki tingkat akurasi yang sangat baik dalam mengidentifikasi tren data karena di bawah standar umum evaluasi peramalan yaitu 10%
+
+
+# Tahap pelatihan dan pengujian Double Moving Average(DMA)
+Metode pemulusan keduayaitu DMA untuk meramalkan deret waktu yang memiliki pola tren linear, menerapkan moving average sebanyak dua kali secara berurutan kemudian menghitung nilai konstanta dan kemiringan untuk menghasilkan nilai peramalan
+
+```{r}
+#Perhitungan pemulusan menggunakan data latih
+sma1 <- SMA(train_data, n = 3)
+sma2 <- SMA(sma1, n = 3)
+At <- 2 * sma1 - sma2
+Bt <- (2 / (3 - 1)) * (sma1 - sma2)
+
+#Peramalan untuk periode data uji
+h_uji <- length(test_data)
+ramalan_dma <- numeric(h_uji)
+for (i in 1:h_uji) {
+  ramalan_dma[i] <- tail(At, 1) + tail(Bt, 1) * i
+}
+
+#Perbandingan data uji dan hasil ramalan
+bandingan_dma <- data.frame(
+  Data_Uji = test_data,
+  Hasil_Ramalan = ramalan_dma
+)
+print(bandingan_dma)
+
+#Evaluasi akurasi (MAD, MSE, MAPE)
+error_dma <- test_data - ramalan_dma
+mad_dma <- mean(abs(error_dma), na.rm = TRUE)
+mse_dma <- mean(error_dma^2, na.rm = TRUE)
+mape_dma <- mean(abs(error_dma / test_data), na.rm = TRUE) * 100
+
+cat("MAD DMA:", mad_dma, "\n")
+cat("MSE DMA:", mse_dma, "\n")
+cat("MAPE DMA:", mape_dma, "% \n")
+
+#Visualisasi Plot Data Latih, Data Uji, dan Hasil Ramalan
+gabungan_plot <- c(train_data, test_data)
+ramalan_lengkap <- c(rep(NA, length(train_data)), ramalan_dma)
+
+ts.plot(gabungan_plot, xlab = "Periode", ylab = "Harga Bitcoin (IDR)", 
+        main = "Double Moving Average N=3 (Train & Test)",
+        ylim = c(min(gabungan_plot, na.rm = TRUE), max(gabungan_plot, na.rm = TRUE)))
+lines(ramalan_lengkap, col = "red", lwd = 2)
+legend("topleft", c("Data Aktual (Train + Test)", "Data Peramalan Test"), 
+       lty = 1, col = c("black", "red"), cex = 0.8)
+
+```
+
+# Tahap pelatihan, pengujian, dan visualisasi Single Exponential smoothing(SES)
+Metode pemulusan ketiga yaitu SES menggunakan fungsi ses() dari package forecast untuk menghasilkan estimasi nilai pemulusan parametter alpha optimal serta visualisasi peramalan 5 periode kedepan menggunakan fungsi plot()
+
+```{r}
+library(forecast)
+
+#Proses SES menggunakan data latih
+dt.ses <- ses(train_data, h = length(test_data))
+
+#Perbandingan data uji dan hasil ramalan
+bandingan_ses <- data.frame(
+  Data_Uji = test_data,
+  Hasil_Ramalan = as.numeric(dt.ses$mean)
+)
+print(bandingan_ses)
+
+#Menghitung selisish error untuk mengukur tungkat akurasi pada data uji (MAD, MSE, MAPE)
+error_ses <- test_data - dt.ses$mean
+mad_ses <- mean(abs(error_ses), na.rm = TRUE)
+mse_ses <- mean(error_ses^2, na.rm = TRUE)
+mape_ses <- mean(abs(error_ses / test_data), na.rm = TRUE) * 100
+
+cat("MAD SES:", mad_ses, "\n")
+cat("MSE SES:", mse_ses, "\n")
+cat("MAPE SES:", mape_ses, "% \n")
+
+print(summary(dt.ses))
+
+#Plot perbandingan antara(data latih + uji) vs (data hasil peramalan)
+gabungan_plot <- c(train_data, test_data)
+ramalan_lengkap <- c(rep(NA, length(train_data)), as.numeric(dt.ses$mean))
+
+ts.plot(gabungan_plot, xlab = "Periode", ylab = "Harga Bitcoin (IDR)", 
+        main = "Single Exponential Smoothing (Train & Test)",
+        ylim = c(min(gabungan_plot, na.rm = TRUE), max(gabungan_plot, na.rm = TRUE)))
+lines(ramalan_lengkap, col = "red", lwd = 2)
+legend("topleft", c("Data Aktual (Train + Test)", "Data Peramalan Test"), 
+       lty = 1, col = c("black", "red"), cex = 0.8)
+```
+
+
+# Akurasi model menggunakan:
+MAD(Mean Absolute Deviation)
+MSE(Mean Squared Error)
+MAPE(Mean Absolute Percentage Error)
+dari masing-masing metode yang sudah dibentuk yaitu(SMA, DMA, dan SES) nilai error terkecil mengindikasi model peramalan terbaik.
+
+```{r}
+dt.akurasi <- data.frame(
+  Metode = c("Single Moving Average (SMA)", "Double Moving Average (DMA)", "Single Exponential Smoothing (SES)"),
+  MAD = c(mad_sma, mad_dma, mad_ses),
+  MSE = c(mse_sma, mse_dma, mse_ses),
+  MAPE = c(mape_sma, mape_dma, mape_ses)
+)
+
+dt.akurasi
+```
+
+Berdasarkan nilai MAD di atas, SMA= 18.305.170, DMA= 20.419.149, SES: 15.830.754. Metode SES memiliki nilai error yang terendah(MAD, MSE, dan MAPE terkecil). Maka SES dipilih sebagai metode terbaik untuk melakukan peramalan harga Bitcoin.
+
+Seluruh nilai MAPE ketiganya yitu SMA: 1,91%, DMA: 2,12%, dan SES: 1,65% berada dibawah 10% yang berarti model peramalan memiliki tingkat akurasi yang sangat baik. Model SES tetap mejadi model terbaik karena memiliki presentase error terkecil yaitu: 1,65%
+
+# Tahap pelatihan, pengujian, dan visualisasi Double Exponential Smoothing (DES)
+DES berfungsi menangani data berpola tren yang menunjukkan arah pergerakan naik atau turun yang konsisten. Nilai peramalan untuk periode ke depan dihitung dengan menggabungkan komponen level terakhir ditambah komponen tren yang dikalikan dengan selang periode waktu peramalan.
+
+```{r}
+library(forecast)
+
+#Metode DES menggunakan data latih 
+dt.des <- holt(train_data, h = length(test_data))
+
+#Perbandingan antara data uji asli dengan hasil ramalan DES
+bandingan_des <- data.frame(
+  Data_Uji = test_data,
+  Hasil_Ramalan = as.numeric(dt.des$mean)
+)
+print(bandingan_des)
+
+# Menghitung selisih error untuk mengukur tingkat akurasi pada data uji
+error_des <- test_data - dt.des$mean
+mad_des <- mean(abs(error_des), na.rm = TRUE)
+mse_des <- mean(error_des^2, na.rm = TRUE)
+mape_des <- mean(abs(error_des / test_data), na.rm = TRUE) * 100
+
+cat("MAD DES:", mad_des, "\n")
+cat("MSE DES:", mse_des, "\n")
+cat("MAPE DES:", mape_des, "% \n")
+
+print(summary(dt.des))
+
+#Plot grafik perbandingan antara (data latih + uji) dengan hasil ramalan DES
+gabungan_plot <- c(train_data, test_data)
+ramalan_lengkap <- c(rep(NA, length(train_data)), as.numeric(dt.des$mean))
+
+ts.plot(gabungan_plot, xlab = "Periode", ylab = "Harga Bitcoin (IDR)", 
+        main = "Double Exponential Smoothing (Data Latih dan Uji)",
+        ylim = c(min(gabungan_plot, na.rm = TRUE), max(gabungan_plot, na.rm = TRUE)))
+lines(ramalan_lengkap, col = "red", lwd = 2)
+legend("topleft", c("Data Aktual (Train + Test)", "Hasil Ramalan Test"), 
+       lty = 1, col = c("black", "red"), cex = 0.8)
+```
+# Holt-Winters(Winter Adiptif dan Multiplikatif) tidak digunakan karena data pergerakan Bitcoin tidak emiliki pola musiman yang berulang, data Bitcoin merupakan tren harga harian yang fluktuatif tanpa siklus musiman
+
+
+# Kesimpulan
+Metode yang digunakan menggunakan pengujian dan perbandingan model peramalan dengan skema data latih dan dan data uji darii empat metode utama yaitu Single Moving Average(SMAA), Double Moving Average(DMA), Single Exponential Smoothing(SES), dan double Exponential smoothing(DES). 
+
+Akurasi model menggunakan: MAD(Mean Absolute Deviation), MSE(Mean Squared Error), dan MAPE(Mean Absolute Percentage Error) dari masing-masing metode yang sudah dibentuk yaitu(SMA, DMA, dan SES) nilai error terkecil mengindikasi model peramalan terbaik.
+
+Berdasarkan nilai MAD yang didapatkan, SMA= 18.305.170, DMA= 20.419.149, SES: 15.830.754. Metode SES memiliki nilai error yang terendah(MAD, MSE, dan MAPE terkecil). Maka SES dipilih sebagai metode terbaik untuk melakukan peramalan harga Bitcoin.
+
+Serta Seluruh nilai MAPE ketiganya yitu SMA: 1,91%, DMA: 2,12%, dan SES: 1,65% berada dibawah 10% yang berarti model peramalan memiliki tingkat akurasi yang sangat baik. Model SES tetap mejadi model terbaik karena memiliki presentase error terkecil yaitu: 1,65%.
