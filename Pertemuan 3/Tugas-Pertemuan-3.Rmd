@@ -1,0 +1,237 @@
+---
+title: "Tugas-Pertemuan-3"
+author: "Rahma Annisa"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+Deadline: Kamis, 10 September 2026 (23.59)
+
+Data:
+Data deret waktu terdiri dari 72 observasi per jam. Data dibagi menjadi data Training (58 observasi) untuk pembentukan model, dan data Testing (14 observasi) untuk validasi peramalan.
+
+variabel:
+Variabel Dependen (Y): AQI (Air Quality Index)
+Variabel Independen (X): pm25 (Konsentrasi partikulat PM2.5)
+
+Metode:
+Metode regresi dengan peubah lag yang diterapkan adalah:
+1.Model Koyck: Mengasumsikan penurunan pengaruh masa lalu secara eksponensial dan diringkas menggunakan lag pertama peubah dependen (Y(t-1)).  
+2.Distributed Lag Model (DLM): Menghubungkan Y(t) dengan nilai X saat ini dan masa lalunya hingga batas lag tertentu (q).  3.Autoregressive Distributed Lag (ARDL): Memadukan pengaruh lag peubah X (p) dan lag peubah Y (q) secara bersamaan
+
+```{r}
+library(dLagM)
+library(dynlm)
+library(MLmetrics)
+library(lmtest)
+library(car)
+```
+
+Data
+```{r}
+#Dataset
+data_air <- read.csv("C:/Users/hp/Downloads/NewDelhi_Air_quality.csv")
+
+#variabel Y (AQI) dan X (pm25)
+data_clean <- data.frame(
+  Yt = data_air$AQI,
+  Xt = data_air$pm25
+)
+
+#Membagi Data training 58 baris, testing 14 baris
+train <- data_clean[1:58, ]
+test  <- data_clean[59:72, ]
+
+#mengonversi ke Time Series (ts)
+train.ts <- ts(train)
+test.ts  <- ts(test)
+data.ts  <- ts(data_clean)
+
+#Menampilkan data 
+head(train)
+```
+
+Model Koyck
+Model Koyck mengasumsikan bahwa bobot koefisien lag menurun secara eksponensial seiring bertambahnya jeda waktu
+
+Permodelan
+```{r}
+model.koyck <- koyckDlm(x = train$Xt, y = train$Yt)
+summary(model.koyck)
+```
+Persamaan model Koyck yang diperoleh:
+AQI(t) = 4.0771 - 0.5723 PM2.5(t) + 0.8897 AQI(t-1)
+
+1. Intercept: Estimasi = 4.0771, p-value = 0.0301 < 0.05. Tolak H0, intercept berpengaruh nyata.
+2. PM2.5 (X.t): Estimasi = -0.5723, p-value = 0.0500 <= 0.05. Tolak H0, Xt berpengaruh nyata terhadap Yt.
+3. Lag AQI (Y.1): Estimasi = 0.8897, p-value < 2e-16 < 0.05. Tolak H0, Yt-1 berpengaruh sangat nyata terhadap Yt.
+
+Kebaikan Model
+1. Adjusted R-squared = 0.8209: Model mampu menjelaskan 82.09% keragaman AQI.
+2. Wald Test: p-value < 2.2e-16 < 0.05. Tolak H0, variabel bebas dan lag berpengaruh nyata.
+
+Peramalan
+```{r}
+#tabel lag 1 sampai 10
+dlm_aic <- finiteDLMauto(formula = Yt ~ Xt,
+                         data = data.frame(train), 
+                         q.min = 1, q.max = 10,
+                         model.type = "dlm", 
+                         error.type = "AIC", 
+                         trace = FALSE)
+print(dlm_aic)
+
+#q dengan AIC minimum
+q_opt <- which.min(dlm_aic$AIC)
+cat("Lag q optimum terpilih untuk DLM adalah:", q_opt, "\n")
+```
+Penentuan Lag Optimum DLM:
+Kriteria Pemilihan: Lag optimum ditentukan berdasarkan nilai AIC terkecil dari pengujian lag 1 sampai 10.
+
+Hasil: Nilai AIC terendah diperoleh pada lag q = 1, sehingga model DLM terbaik menggunakan lag q = 1 (pengaruh PM2.5 saat ini dan 1 periode sebelumnya).
+
+Regression with Distributed Lag (DLM)
+penentuan Lag q optimum dipilih berdasarkan kriteria nilai Akaike Information Criterion (AIC) terendah
+
+```{r}
+#Model DLM
+model.dlm.opt <- dlm(x = train$Xt, y = train$Yt, q = q_opt)
+summary(model.dlm.opt)
+```
+Uji Autokorelasi
+H₀: Tidak terdapat autokorelasi pada sisaan
+H₁: Terdapat autokorelasi pada sisaan
+
+Persamaan model:
+Yt = 31.691 - 5.051 Xt + 2.783 Xt-1
+
+1. Intercept: Estimasi = 31.691, p-value < 2e-16 < 0.05. Tolak H0, intercept berpengaruh nyata.
+2. PM2.5 saat ini (x.t): Estimasi = -5.051, p-value = 0.00238 < 0.05. Tolak H0, Xt berpengaruh nyata terhadap Yt.
+3. Lag 1 PM2.5 (x.1): Estimasi = 2.783, p-value = 0.01665 < 0.05. Tolak H0, Xt-1 berpengaruh nyata terhadap Yt.
+
+Kebaikan Model
+1. Adjusted R-squared = 0.1528: Model mampu menjelaskan 15.28% keragaman AQI.
+2. Uji F: p-value = 0.004256 < 0.05. Tolak H0, peubah Xt dan Xt-1 berpengaruh nyata secara simultan terhadap Yt.
+
+```{r}
+#Model dynlm menggunakan lag DLM optimum q optimum
+model.dyn <- dynlm(Yt ~ L(Xt, 0:q_opt), data = train.ts)
+
+#Uji Autokorelasi
+dwtest(model.dyn)
+bgtest(model.dyn, order = 2)
+```
+Pemodelan Awal ARDL
+Model ARDL menggabungkan pengaruh dari peubah independen masa lalu dan peubah dependen masa lalu.
+
+```{r}
+#Model ARDL dengan lag X = 1 dan lag Y = 1
+model.ardl <- ardlDlm(formula = Yt ~ Xt, data = train, p = 1, q = 1)
+summary(model.ardl)
+```
+Penentuan Lag Optimum ARDL
+```{r}
+#lag optimum p dan q untuk ARDL
+model.ardl.opt <- ardlBoundOrders(data = data.frame(train), ic = "AIC", formula = Yt ~ Xt)
+
+#lag dengan nilai AIC terkecil
+min_p <- c()
+for(i in 1:length(model.ardl.opt$Stat.table)){
+  min_p[i] <- min(model.ardl.opt$Stat.table[[i]], na.rm = TRUE)
+}
+
+q_opt_ardl <- which(min_p == min(min_p, na.rm = TRUE))[1]
+p_opt_ardl <- which(model.ardl.opt$Stat.table[[q_opt_ardl]] == min(model.ardl.opt$Stat.table[[q_opt_ardl]], na.rm = TRUE))[1]
+
+data.frame("Lag_Y_opt(q)" = q_opt_ardl, 
+           "Lag_X_opt(p)" = p_opt_ardl, 
+           "AIC_Terkecil" = model.ardl.opt$min.Stat)
+```
+Peramalan Model ARDL
+```{r}
+#Peramalan model ARDL data testing
+fore.ardl <- forecast(model = model.ardl, x = test$Xt, h = nrow(test))
+fore.ardl
+
+#MAPE data testing
+mape.ardl <- MAPE(fore.ardl$forecasts, test$Yt)
+cat("MAPE Model ARDL:", mape.ardl, "\n")
+```
+Pendekatan dynlm & Pembentukan Model
+```{r}
+#Model dynlm ARDL optimum
+model.dyn <- dynlm(Yt ~ L(Xt, 0:p_opt_ardl) + L(Yt, 1:q_opt_ardl), data = train.ts)
+summary(model.dyn)
+```
+Uji Autokorelasi
+```{r}
+#Uji Autokorelasi Durbin-Watson dan Breusch-Godfrey
+dwtest(model.dyn)
+bgtest(model.dyn, order = 2)
+```
+H0: Tidak terdapat autokorelasi pada sisaan
+
+Uji Heteroskedastisitas
+```{r}
+#Uji Heteroskedastisitas(Breusch-Pagan)
+bptest(model.dyn)
+```
+H0: Ragam sisaan homogen (homoskedastisitas)
+
+Uji Normalitas Sisaan
+```{r}
+#Uji Normalitas Shapiro-Wilk
+shapiro.test(residuals(model.dyn))
+```
+H0: Sisaan berdistribusi normal
+
+
+Ringkasan 
+```{r}
+#Peramalan dan MAPE ketiga model
+fore.koyck <- forecast(model = model.koyck, x = test$Xt, h = nrow(test))
+mape.koyck <- MAPE(fore.koyck$forecasts, test$Yt)
+
+fore.dlm.opt <- forecast(model = model.dlm.opt, x = test$Xt, h = nrow(test))
+mape.dlm.opt <- MAPE(fore.dlm.opt$forecasts, test$Yt)
+
+fore.ardl <- forecast(model = model.ardl, x = test$Xt, h = nrow(test))
+mape.ardl <- MAPE(fore.ardl$forecasts, test$Yt)
+
+#SSE dari sisaan
+dev_koyck <- sum(residuals(model.koyck)^2)
+dev_dlm   <- sum(residuals(model.dlm.opt)^2)
+dev_ardl  <- sum(residuals(model.ardl)^2)
+
+ringkasan_akurasi <- data.frame(
+  Metode = c("Koyck", 
+             paste0("DLM Optimum (q = ", q_opt, ")"), 
+             paste0("ARDL Optimum (p = ", p_opt_ardl, ", q = ", q_opt_ardl, ")")),
+  Deviance_SSE = c(dev_koyck, dev_dlm, dev_ardl),
+  MAPE_Persen  = c(as.numeric(mape.koyck) * 100, 
+                   as.numeric(mape.dlm.opt) * 100, 
+                   as.numeric(mape.ardl) * 100)
+)
+
+knitr::kable(ringkasan_akurasi, digits = 4, caption = "Perbandingan Akurasi Model Peubah Lag")
+```
+
+
+
+Visualisasi Aktual vs Peramalan
+```{r}
+par(mfrow=c(1,1))
+
+rentang_y <- range(c(test$Yt, fore.koyck$forecasts, fore.dlm.opt$forecasts, fore.ardl$forecasts))
+
+plot(test$Xt, test$Yt, type="b", col="black", ylim=rentang_y, lwd=2, 
+     ylab="Nilai AQI (Y)", xlab="Konsentrasi PM2.5 (X)", main="Perbandingan Model Peramalan AQI")
+
+lines(test$Xt, fore.koyck$forecasts, col="red", type="b", pch=16)
+lines(test$Xt, fore.dlm.opt$forecasts, col="blue", type="b", pch=17)
+lines(test$Xt, fore.ardl$forecasts, col="green", type="b", pch=18)
+
+legend("topleft", legend=c("Aktual", "Koyck", "DLM Optimum", "ARDL (1,1)"),
+       col=c("black","red","blue","green"), lty=1, pch=c(1,16,17,18), cex=0.8, inset=0.02)
+```
+
